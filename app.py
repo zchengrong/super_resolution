@@ -1,80 +1,114 @@
-import uvicorn
 from fastapi import FastAPI, BackgroundTasks, HTTPException
-from typing import List
-import time
+from pydantic import BaseModel
+import aiohttp
+import asyncio
+import aioredis
 import uuid
+import json
+import uvicorn
 
 app = FastAPI()
 
 
-class SuperResolutionModel:
-    def __init__(self):
-        self.tasks = {}
-
-    def infer(self, task_id, image_path):
-        # 模拟推理过程，这里可以替换为你的超分辨率模型推理代码
-        start_time = time.time()
-        while time.time() - start_time < 20:
-            # 检查是否有停止任务请求
-            if self.tasks[task_id]["stop_requested"]:
-                return None, "Processing (stopped)"
-            time.sleep(1)
-        return f"Super resolution inference completed for {image_path}", "Completed"
-
-    def stop_task(self, task_id):
-        # 停止任务
-        if task_id in self.tasks:
-            self.tasks[task_id]["stop_requested"] = True
-
-    def get_status(self, task_id):
-        # 获取任务状态
-        if task_id not in self.tasks:
-            return "Not found"
-        elif self.tasks[task_id]["status"] == "Completed":
-            return "Completed"
-        elif self.tasks[task_id]["status"] == "Failed":
-            return "Failed"
-        else:
-            return "Processing"
+# 连接 Redis
+async def connect_to_redis():
+    redis = await aioredis.create_redis_pool("redis://localhost")
+    return redis
 
 
-super_resolution_model = SuperResolutionModel()
+redis = asyncio.run(connect_to_redis())
 
 
-@app.post("/tasks/")
-async def create_task(background_tasks: BackgroundTasks, image_paths: List[str]):
+# 超分入参
+class SuperResolutionRequest(BaseModel):
+    image_url: str
+    scale_factor: int = 2
+
+
+class TaskStatus(BaseModel):
+    task_id: str
+    status: str
+    result: str = None
+
+
+class TaskResult(BaseModel):
+    task_id: str
+    result: str
+
+
+async def perform_super_resolution(task_id, image_url, scale_factor):
+    # 检查任务是否已取消
+    task_status = await redis.hget("tasks", task_id)
+    if task_status is None or json.loads(task_status)["status"] == "canceled":
+        return
+
+    # 模拟超分辨率处理，这里可以替换为实际的超分辨率处理代码
+    await asyncio.sleep(20)
+
+    # 检查任务是否已取消
+    task_status = await redis.hget("tasks", task_id)
+    if task_status is None or json.loads(task_status)["status"] == "canceled":
+        return
+
+    result = f"Processed image from {image_url} with scale factor {scale_factor}"
+    await redis.hset("tasks", task_id, json.dumps({"status": "completed", "result": result}))
+
+
+@app.post("/super-resolution/")
+async def super_resolution(request: SuperResolutionRequest, background_tasks: BackgroundTasks):
+    # 生成唯一的任务ID
     task_id = str(uuid.uuid4())
-    super_resolution_model.tasks[task_id] = {"status": "Processing", "result": None, "stop_requested": False}
 
-    def infer_task():
-        for image_path in image_paths:
-            result, status = super_resolution_model.infer(task_id, image_path)
-            super_resolution_model.tasks[task_id]["result"] = result
-            super_resolution_model.tasks[task_id]["status"] = status
+    # 添加任务到后台任务中
+    background_tasks.add_task(perform_super_resolution, task_id, request.image_url, request.scale_factor)
 
-    background_tasks.add_task(infer_task)
+    # 存储任务状态到 Redis
+    await redis.hset("tasks", task_id, json.dumps({"status": "processing", "result": None}))
+
+    # 返回任务ID
     return {"task_id": task_id}
 
 
-@app.put("/tasks/{task_id}/stop/")
-async def stop_task(task_id: str):
-    if task_id not in super_resolution_model.tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
-    super_resolution_model.stop_task(task_id)
-    return {"message": "Stop request sent for task"}
+@app.get("/cancel/{task_id}")
+async def cancel_task(task_id: str):
+    # 取消任务
+    task_status = await redis.hget("tasks", task_id)
+    if task_status is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task_data = json.loads(task_status)
+    if task_data["status"] != "processing":
+        raise HTTPException(status_code=400, detail="任务已完成或已取消")
+
+    # 更新任务状态为已取消
+    await redis.hset("tasks", task_id, json.dumps({"status": "canceled", "result": None}))
+
+    return {"message": "任务已取消"}
 
 
-@app.get("/tasks/{task_id}/status/")
-async def get_task_status(task_id: str):
-    status = super_resolution_model.get_status(task_id)
-    return {"status": status, "result": super_resolution_model.tasks[task_id]["result"] if task_id in super_resolution_model.tasks else None}
+@app.get("/status/{task_id}", response_model=TaskStatus)
+async def task_status(task_id: str):
+    # 获取任务状态
+    task_status = await redis.hget("tasks", task_id)
+    if task_status is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    return json.loads(task_status)
 
 
-if __name__ == '__main__':
-    uvicorn.run(app, host="0.0.0.0", port=4562)
-    # image_url = "test/1705570348_0.png"
-    # sr_xn = 2
-    # sr_result_url = main(image_url, sr_xn)
-    # print(sr_result_url)
-    # image = read_image(sr_result_url)
-    # Image.open(image).convert("RGB").show()
+@app.get("/result/{task_id}", response_model=TaskResult)
+async def task_result(task_id: str):
+    # 获取任务结果
+    task_status = await redis.hget("tasks", task_id)
+    if task_status is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task_data = json.loads(task_status)
+    if task_data["status"] != "completed":
+        raise HTTPException(status_code=400, detail="任务尚未完成")
+
+    return {"task_id": task_id, "result": task_data["result"]}
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
