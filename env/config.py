@@ -13,6 +13,12 @@ show_lq = False
 skip_if_exist = False
 seed = 233
 device = "cuda"
+tile_diffusion = False #
+tile_diffusion_size = 512
+tile_diffusion_stride = 256
+tile_vae = True
+vae_decoder_tile_size = 224
+vae_encoder_tile_size = 1024
 
 # minio 配置
 sr_bucket = "test"
