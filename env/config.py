@@ -22,5 +22,10 @@ vae_encoder_tile_size = 1024
 
 # minio 配置
 sr_bucket = "test"
+MINIO_IP = "www.minio.aida.com.hk"
+MINIO_PORT = 9000
+MINIO_ACCESS = 'vXKFLSJkYeEq2DrSZvkB'
+MINIO_SECRET = 'uKTZT3x7C43WvPN9QTc99DiRkwddWZrG9Uh3JVlR'
+MINIO_SECURE = True
 # input = 'preprocess_img/input_x2'  # 这个值需要被函数参数覆盖
 # output = '/path/to/output'  # 这个值将被函数参数覆盖
