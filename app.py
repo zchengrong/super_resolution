@@ -1,31 +1,27 @@
-from PIL import Image
+from functools import partial
+
+import redis
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
-import aiohttp
 import asyncio
 import aioredis
 import uuid
 import json
 import uvicorn
 
-from utils.sr_utils import read_image
+from sr_service import SuperResolution
 
-app = FastAPI()
-
+service = SuperResolution()
 
 # 连接 Redis
-async def connect_to_redis():
-    redis = await aioredis.create_redis_pool("redis://localhost")
-    return redis
-
-
-redis = asyncio.run(connect_to_redis())
+redis_client = redis.StrictRedis(host="127.0.0.1", port=6379, db=0, decode_responses=True)
+app = FastAPI()
 
 
 # 超分入参
 class SuperResolutionRequest(BaseModel):
     image_url: str
-    scale_factor: int = 2
+    sr_xn: int = 2
 
 
 class TaskStatus(BaseModel):
@@ -39,47 +35,45 @@ class TaskResult(BaseModel):
     result: str
 
 
-async def perform_super_resolution(task_id, image_url, scale_factor):
+def perform_super_resolution(task_id, sr_image):
     # 检查任务是否已取消
-    task_status = await redis.hget("tasks", task_id)
+    task_status = redis_client.get(task_id)
     if task_status is None or json.loads(task_status)["status"] == "canceled":
         return
-
     # 模拟超分辨率处理，这里可以替换为实际的超分辨率处理代码
-    await asyncio.sleep(20)
+    result = service.process(sr_image)
 
     # 检查任务是否已取消
-    task_status = await redis.hget("tasks", task_id)
+    task_status = redis_client.get(task_id)
     if task_status is None or json.loads(task_status)["status"] == "canceled":
         return
 
-    result = f"Processed image from {image_url} with scale factor {scale_factor}"
-    await redis.hset("tasks", task_id, json.dumps({"status": "completed", "result": result}))
+    redis_client.set(task_id, json.dumps({"status": "completed", "result": result}))
 
 
 @app.post("/super-resolution/")
-async def super_resolution(request: SuperResolutionRequest, background_tasks: BackgroundTasks):
+def super_resolution(request: SuperResolutionRequest, background_tasks: BackgroundTasks):
+    _, sr_image = service.pre_process(request.image_url, request.sr_xn)
+    if _:
+        raise HTTPException(status_code=401, detail="图片尺寸过大,请调整超分倍率或更换图片")
+
     # 生成唯一的任务ID
     task_id = str(uuid.uuid4())
 
-    image_obj = read_image(request.image_url)
-    lq = Image.open(image_obj).convert("RGB")
-    # 预处理
-
     # 添加任务到后台任务中
-    background_tasks.add_task(perform_super_resolution, task_id, request.image_url, request.scale_factor)
+    background_tasks.add_task(perform_super_resolution, task_id, [sr_image])
 
     # 存储任务状态到 Redis
-    await redis.hset("tasks", task_id, json.dumps({"status": "processing", "result": None}))
+    redis_client.set(task_id, json.dumps({"status": "processing", "result": None}))
 
     # 返回任务ID
     return {"task_id": task_id}
 
 
 @app.get("/cancel/{task_id}")
-async def cancel_task(task_id: str):
+def cancel_task(task_id: str):
     # 取消任务
-    task_status = await redis.hget("tasks", task_id)
+    task_status = redis_client.get(task_id)
     if task_status is None:
         raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -88,25 +82,25 @@ async def cancel_task(task_id: str):
         raise HTTPException(status_code=400, detail="任务已完成或已取消")
 
     # 更新任务状态为已取消
-    await redis.hset("tasks", task_id, json.dumps({"status": "canceled", "result": None}))
+    redis_client.set(task_id, json.dumps({"status": "canceled", "result": None}))
 
     return {"message": "任务已取消"}
 
 
 @app.get("/status/{task_id}", response_model=TaskStatus)
-async def task_status(task_id: str):
+def task_status(task_id: str):
     # 获取任务状态
-    task_status = await redis.hget("tasks", task_id)
+    task_status = redis_client.get(task_id)
     if task_status is None:
         raise HTTPException(status_code=404, detail="任务不存在")
-
-    return json.loads(task_status)
+    task_status = json.loads(task_status)
+    return {"task_id": task_id, "status": task_status['status']}
 
 
 @app.get("/result/{task_id}", response_model=TaskResult)
-async def task_result(task_id: str):
+def task_result(task_id: str):
     # 获取任务结果
-    task_status = await redis.hget("tasks", task_id)
+    task_status = redis_client.get(task_id)
     if task_status is None:
         raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -118,4 +112,4 @@ async def task_result(task_id: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=5000)
