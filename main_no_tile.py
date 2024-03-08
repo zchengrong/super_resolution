@@ -264,10 +264,10 @@ async def run(item: SRItem):
 
 if __name__ == '__main__':
     # uvicorn.run(app, host="0.0.0.0", port=4562)
-    image_url = "test/1024_image/1709713346.806274.png"
-    # image_url = "test/512_image/21.png"
+    # image_url = "test/1024_image/1709713346.806274.png"
+    image_url = "test/512_image/21.png"
 
-    sr_xn = 4
+    sr_xn = 2
 
     start_time = time.time()
     sr_result_url = main(image_url, sr_xn)
