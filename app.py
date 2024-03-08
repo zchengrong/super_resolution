@@ -1,3 +1,4 @@
+from PIL import Image
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 import aiohttp
@@ -6,6 +7,8 @@ import aioredis
 import uuid
 import json
 import uvicorn
+
+from utils.sr_utils import read_image
 
 app = FastAPI()
 
@@ -58,6 +61,10 @@ async def perform_super_resolution(task_id, image_url, scale_factor):
 async def super_resolution(request: SuperResolutionRequest, background_tasks: BackgroundTasks):
     # 生成唯一的任务ID
     task_id = str(uuid.uuid4())
+
+    image_obj = read_image(request.image_url)
+    lq = Image.open(image_obj).convert("RGB")
+    # 预处理
 
     # 添加任务到后台任务中
     background_tasks.add_task(perform_super_resolution, task_id, request.image_url, request.scale_factor)
